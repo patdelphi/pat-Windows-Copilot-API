@@ -35,15 +35,37 @@ You sign in once with your Microsoft account in a browser; your session is saved
 ```bash
 # 1. Clone the project
 git clone <your-repo-url>
-cd "Windows Copilot API"
+cd Windows-Copilot-API
+```
 
-# 2. Install dependencies
+**2. Create and activate a virtual environment**
+
+On **macOS / Linux**:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+On **Windows** (PowerShell):
+
+```powershell
+python -m venv venv
+venv\Scripts\Activate.ps1
+```
+
+> On Windows you may need to allow script execution once: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. In `cmd.exe` activate with `venv\Scripts\activate.bat` instead.
+
+**3. Install dependencies and sign in**
+
+```bash
+# Install dependencies
 pip install -r requirements.txt
 
-# 3. Install the browser Playwright needs (one-time)
+# Install the browser Playwright needs (one-time)
 playwright install chromium
 
-# 4. Sign in once: a browser opens, log into your Microsoft account
+# Sign in once: a browser opens, log into your Microsoft account
 python -m copilot login
 ```
 
