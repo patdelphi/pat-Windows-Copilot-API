@@ -1,4 +1,4 @@
-"""Builders for the OpenAI wire shapes (completions, SSE chunks)."""
+"""程序说明：构造 OpenAI 兼容响应，包括普通回复、流式片段和工具调用。"""
 
 import json
 import time
@@ -28,6 +28,45 @@ def completion_response(text: str, model: str, conversation_id=None) -> dict:
                 "index": 0,
                 "message": {"role": "assistant", "content": text},
                 "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def tool_calls_response(tool_calls: list, model: str, conversation_id=None) -> dict:
+    """构造 OpenAI 标准的非流式工具调用响应。
+
+    服务端只把模型意图转换成 `tool_calls`，实际工具执行由 AI IDE 或客户端完成。
+    """
+    normalized = []
+    for idx, call in enumerate(tool_calls):
+        item = dict(call)
+        item.setdefault("id", f"call_{uuid.uuid4().hex[:24]}")
+        item.setdefault("type", "function")
+        function = dict(item.get("function") or {})
+        args = function.get("arguments", "{}")
+        if not isinstance(args, str):
+            args = json.dumps(args, ensure_ascii=False)
+        function["arguments"] = args
+        item["function"] = function
+        normalized.append(item)
+
+    return {
+        "id": new_id(),
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "conversation_id": conversation_id,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": normalized,
+                },
+                "finish_reason": "tool_calls",
             }
         ],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},

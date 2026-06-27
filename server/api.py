@@ -1,4 +1,4 @@
-"""FastAPI app wiring Copilot onto the OpenAI Chat Completions API."""
+"""程序说明：把 Copilot 客户端封装成 OpenAI Chat Completions 兼容 HTTP API。"""
 
 import threading
 import time
@@ -15,8 +15,9 @@ from .openai_format import (
     new_id,
     sse_event,
     stream_chunk,
+    tool_calls_response,
 )
-from .prompt import extract_prompt_and_image
+from .prompt import build_tool_prompt, extract_prompt_and_image, parse_tool_calls, should_use_tools
 from .ratelimit import TokenBucket
 from .schemas import ChatCompletionRequest
 
@@ -66,7 +67,7 @@ def _rate_limited_response():
 _upstream_lock = threading.Lock()
 
 
-def _stream(prompt: str, model: str, conversation_id=None, image=None):
+def _stream(prompt: str, model: str, conversation_id=None, image=None, tools=None, tool_choice=None):
     """Yield OpenAI ``chat.completion.chunk`` SSE events for ``prompt``.
 
     ``conversation_id`` continues an existing Copilot thread; ``None`` starts a
@@ -77,6 +78,43 @@ def _stream(prompt: str, model: str, conversation_id=None, image=None):
     try:
         with _upstream_lock:  # one upstream chat at a time (released on disconnect)
             yield sse_event(stream_chunk(cid, created, model, {"role": "assistant"}))
+            if should_use_tools(tools, tool_choice):
+                # Copilot 不原生输出 OpenAI 流式 tool_calls；这里先让 Copilot 返回完整
+                # 工具 JSON，再包装成一个 SSE tool_calls delta，供 AI IDE 触发工具。
+                upstream_prompt = build_tool_prompt(prompt, tools, tool_choice)
+                reply = client.chat(upstream_prompt, conversation_id=conversation_id, image=image)
+                tool_calls = parse_tool_calls(reply.text)
+                if tool_calls:
+                    yield sse_event(stream_chunk(
+                        cid,
+                        created,
+                        model,
+                        {"tool_calls": [
+                            {"index": idx, **call}
+                            for idx, call in enumerate(tool_calls)
+                        ]},
+                    ))
+                    yield sse_event(stream_chunk(
+                        cid,
+                        created,
+                        model,
+                        {},
+                        finish="tool_calls",
+                        conversation_id=reply.conversation_id,
+                    ))
+                    yield "data: [DONE]\n\n"
+                    return
+                yield sse_event(stream_chunk(cid, created, model, {"content": reply.text}))
+                yield sse_event(stream_chunk(
+                    cid,
+                    created,
+                    model,
+                    {},
+                    finish="stop",
+                    conversation_id=reply.conversation_id,
+                ))
+                yield "data: [DONE]\n\n"
+                return
             stream = client.stream(prompt, conversation_id=conversation_id, image=image)
             for piece in stream:
                 if isinstance(piece, str) and piece:
@@ -134,12 +172,26 @@ def chat_completions(req: ChatCompletionRequest):
 
     if req.stream:
         return StreamingResponse(
-            _stream(prompt, model, req.conversation_id, image=image), media_type="text/event-stream"
+            _stream(
+                prompt,
+                model,
+                req.conversation_id,
+                image=image,
+                tools=req.tools,
+                tool_choice=req.tool_choice,
+            ),
+            media_type="text/event-stream",
         )
 
     try:
         with _upstream_lock:  # serialize: one upstream chat at a time
-            reply = client.chat(prompt, conversation_id=req.conversation_id, image=image)
+            # 工具调用第一版只返回 OpenAI tool_calls，不在服务端执行工具。
+            upstream_prompt = (
+                build_tool_prompt(prompt, req.tools, req.tool_choice)
+                if should_use_tools(req.tools, req.tool_choice)
+                else prompt
+            )
+            reply = client.chat(upstream_prompt, conversation_id=req.conversation_id, image=image)
     except ClearanceRequired:
         return JSONResponse(
             status_code=503,
@@ -150,6 +202,10 @@ def chat_completions(req: ChatCompletionRequest):
             status_code=502,
             content={"error": {"message": str(exc), "type": "upstream_error"}},
         )
+    if should_use_tools(req.tools, req.tool_choice):
+        tool_calls = parse_tool_calls(reply.text)
+        if tool_calls:
+            return tool_calls_response(tool_calls, model, reply.conversation_id)
     return completion_response(reply.text, model, reply.conversation_id)
 
 

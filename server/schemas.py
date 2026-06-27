@@ -1,4 +1,4 @@
-"""Pydantic request models for the OpenAI-compatible endpoints."""
+"""程序说明：定义 OpenAI 兼容接口的请求模型，包含聊天、多模态和工具调用字段。"""
 
 from typing import Any, List, Optional, Union
 
@@ -18,6 +18,10 @@ class ChatCompletionRequest(BaseModel):
     messages: List[ChatMessage]
     model: Optional[str] = MODEL_NAME
     stream: bool = False
+    # OpenAI tool calling fields. The server does not execute tools itself; it
+    # only returns model-requested tool calls for the IDE/client to execute.
+    tools: Optional[List[Any]] = None
+    tool_choice: Optional[Any] = None
     # Copilot's own conversation id (returned in earlier responses). Pass it back
     # to continue that thread; omit it to start a fresh conversation. Outside
     # OpenAI's schema, but standard clients can set it via extra_body.
