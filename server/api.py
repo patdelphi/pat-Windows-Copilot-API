@@ -16,7 +16,7 @@ from .openai_format import (
     sse_event,
     stream_chunk,
 )
-from .prompt import messages_to_prompt
+from .prompt import extract_prompt_and_image
 from .ratelimit import TokenBucket
 from .schemas import ChatCompletionRequest
 
@@ -66,7 +66,7 @@ def _rate_limited_response():
 _upstream_lock = threading.Lock()
 
 
-def _stream(prompt: str, model: str, conversation_id=None):
+def _stream(prompt: str, model: str, conversation_id=None, image=None):
     """Yield OpenAI ``chat.completion.chunk`` SSE events for ``prompt``.
 
     ``conversation_id`` continues an existing Copilot thread; ``None`` starts a
@@ -77,7 +77,7 @@ def _stream(prompt: str, model: str, conversation_id=None):
     try:
         with _upstream_lock:  # one upstream chat at a time (released on disconnect)
             yield sse_event(stream_chunk(cid, created, model, {"role": "assistant"}))
-            stream = client.stream(prompt, conversation_id=conversation_id)
+            stream = client.stream(prompt, conversation_id=conversation_id, image=image)
             for piece in stream:
                 if isinstance(piece, str) and piece:
                     yield sse_event(stream_chunk(cid, created, model, {"content": piece}))
@@ -112,7 +112,13 @@ def list_models():
 
 @app.post("/v1/chat/completions")
 def chat_completions(req: ChatCompletionRequest):
-    prompt = messages_to_prompt(req.messages)
+    try:
+        prompt, image = extract_prompt_and_image(req.messages)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": str(exc), "type": "invalid_request_error"}},
+        )
     if not prompt.strip():
         return JSONResponse(
             status_code=400,
@@ -128,12 +134,12 @@ def chat_completions(req: ChatCompletionRequest):
 
     if req.stream:
         return StreamingResponse(
-            _stream(prompt, model, req.conversation_id), media_type="text/event-stream"
+            _stream(prompt, model, req.conversation_id, image=image), media_type="text/event-stream"
         )
 
     try:
         with _upstream_lock:  # serialize: one upstream chat at a time
-            reply = client.chat(prompt, conversation_id=req.conversation_id)
+            reply = client.chat(prompt, conversation_id=req.conversation_id, image=image)
     except ClearanceRequired:
         return JSONResponse(
             status_code=503,

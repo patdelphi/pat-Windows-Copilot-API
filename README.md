@@ -187,6 +187,12 @@ curl http://localhost:8000/v1/chat/completions \
 
 > Change the address with env vars: `HOST=0.0.0.0 PORT=8080 python app.py`, or run `uvicorn server.api:app --host 0.0.0.0 --port 8080`.
 
+**Current transport behavior**
+
+- **Text chat:** uses the M365 ChatHub WebSocket over a pure HTTP driver end-to-end. The server no longer falls back to a hidden browser for text requests.
+- **Image input:** OpenAI-style image messages are supported, but today they still go through the browser upload path.
+- **Continuations:** text requests support `conversation_id`; image requests currently start a new conversation only.
+
 👉 More: [examples/04_server_http.py](examples/04_server_http.py), [05_server_stream.py](examples/05_server_stream.py), [06_server_openai_sdk.py](examples/06_server_openai_sdk.py)
 
 ---
@@ -315,6 +321,8 @@ add a few retries yourself.
 - **Sign in once, then reuse.** The cached token refreshes automatically; you only re-sign-in if the session fully expires.
 - **No daily limit, but be reasonable.** Microsoft doesn't impose a daily chat cap, but please use it in moderation, and don't spam or hammer it with automated bulk requests.
 - **One model.** Copilot has no model picker, so the server advertises a single model named `copilot`.
+- **Text is pure HTTP now.** The text path no longer hides `401` by falling back to a browser. If the saved ChatHub token/cookies go stale, the request fails fast and you should refresh the session snapshot.
+- **Images are still browser-backed.** The current multimodal path supports one local image file per request, no remote URLs, no `data:` URLs, and no image continuations with `conversation_id`.
 - **Roughly GPT-4 class.** On GPQA Diamond (198 graduate-level questions, closed-book) it scores **40.9%**, which puts it in the GPT-4 family rather than the reasoning tier (o1/o3). Measured with [tests/gpqa_bench.py](tests/gpqa_bench.py).
 - **Your session is private.** Everything in `session/` (cookies + token) stays on your machine and is git-ignored.
 
@@ -348,6 +356,12 @@ redacted log tails. **Both files are safe to share:** access tokens, cookies,
 OAuth codes, and emails are redacted before anything is written. Attach
 `diagnostic_report.txt` to a GitHub issue (skim it first) and the cause is
 usually obvious.
+
+**If text requests fail with ChatHub `401` after the recent protocol update**
+
+- Re-run `python -m copilot login` to refresh the saved ChatHub token and cookie snapshot in `session/token.json`.
+- Make sure the login finishes on `https://m365.cloud.microsoft/chat/`, because the current text driver reuses the token/cookies captured from that M365 chat session.
+- If it still fails, run `python tests/diagnostic.py` once, send one short message in the opened browser, then retry your API call.
 
 > On a headless **server/VPS** you can't open a browser, so clearance can't be
 > earned there — pass `--report-only`, and do the clearance step on a machine

@@ -165,9 +165,11 @@ class CopilotClient:
             kw = dict(
                 stream=True,
                 proxy=self._proxy,
-                cookies=auth["cookies"] if auth else None,
+                cookies=(auth.get("cookie_records") or auth.get("cookies")) if auth else None,
                 access_token=auth["access_token"] if auth else None,
                 identity_type=auth.get("identity_type") if auth else None,
+                chat_hub=auth.get("chat_hub") if auth else None,
+                chat_request_template=auth.get("chat_request_template") if auth else None,
                 **kwargs,
             )
             if conversation_id is None:

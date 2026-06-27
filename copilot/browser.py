@@ -28,6 +28,7 @@ shapes with ``tests/diagnostic.py`` if Microsoft changes them.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -164,7 +165,17 @@ class BrowserCopilot:
         # (e.g. federated Google logins), where _FIND_TOKEN_JS cannot read it.
         self._captured_chat_token: Optional[str] = None
         self._captured_identity_type: Optional[str] = None
+        self._captured_chat_hub: Optional[dict] = None
+        self._captured_chat_request_template: Optional[dict] = None
         self._ws_listener_installed = False
+        self._stream_pending_prompt: Optional[str] = None
+        self._stream_request_id: Optional[str] = None
+        self._stream_conversation_id: Optional[str] = None
+        self._stream_chunks = []
+        self._stream_done = False
+        self._stream_started = False
+        self._stream_error: Optional[str] = None
+        self._stream_seen_message_ids = set()
         # Set True once the page's chat socket streams a reply (an ``appendText``
         # frame). This is auto_clear's true success signal: a reply means the
         # browser turn passed the Cloudflare gate, so its cookies are worth
@@ -173,6 +184,25 @@ class BrowserCopilot:
         self._warmup_replied = False
 
     # -- lifecycle ----------------------------------------------------------
+
+    @staticmethod
+    def _find_system_chrome() -> Optional[str]:
+        """查找系统中已安装的 Chrome 可执行文件路径，找不到返回 None。"""
+        import shutil
+        # 优先通过环境变量或 PATH 查找
+        chrome_path = shutil.which("chrome")
+        if chrome_path:
+            return chrome_path
+        # Windows 常见安装位置
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Users\{}\AppData\Local\Google\Chrome\Application\chrome.exe".format(os.environ.get("USERNAME", "")),
+        ]
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
+        return None
 
     def start(self, headless: Optional[bool] = None) -> "BrowserCopilot":
         """Launch the persistent browser context and open Copilot."""
@@ -189,6 +219,10 @@ class BrowserCopilot:
                 # switch; its presence is a cheap bot tell Turnstile reads.
                 ignore_default_args=["--enable-automation"],
             )
+            # 优先使用系统已安装的 Chrome，避免下载 Playwright 自带的 Chromium
+            system_chrome = self._find_system_chrome()
+            if system_chrome:
+                launch_kwargs["executable_path"] = system_chrome
             # Hide the "HeadlessChrome" UA only when actually headless; the visible
             # window already uses a normal Chrome UA (and that path works today).
             if self.headless:
@@ -431,26 +465,33 @@ class BrowserCopilot:
     def _install_ws_listener(self) -> None:
         """Capture the chat token off the page's own chat WebSocket.
 
-        The page opens ``wss://.../c/api/chat?...&accessToken=<token>`` (plus, for
-        federated logins, ``&X-UserIdentityType=google``) when it sends a turn.
-        Reading the token here is encryption-proof: the page has already decrypted
-        it. parse_qs URL-decodes the value, so we store the raw token (the drivers
-        re-quote it when building their own socket URL)."""
+        当前网页端会打开 ``wss://substrate.office.com/m365Copilot/Chathub/...``
+        并通过 SignalR 文本帧发送消息。这里同时抓三类信息：
+
+        - ``access_token`` / ``identity_type``：继续用于鉴权
+        - ChatHub URL 里的静态元数据：供纯 HTTP 驱动重建新的 WS 地址
+        - 首个聊天发送帧模板：后续请求只替换动态字段和 prompt
+        """
         if self._ws_listener_installed or self._page is None:
             return
 
         def on_ws(ws):
             try:
                 url = ws.url
-                if "/c/api/chat" not in url:
+                if "/m365Copilot/Chathub/" not in url:
                     return
-                if "accessToken=" in url:
-                    q = parse_qs(urlparse(url).query)
-                    tok = (q.get("accessToken") or [None])[0]
-                    if tok:
-                        self._captured_chat_token = tok
-                        self._captured_identity_type = (q.get("X-UserIdentityType") or [None])[0]
-                # Watch reply frames so auto_clear knows the turn passed the gate.
+                parsed = urlparse(url)
+                q = parse_qs(parsed.query)
+                tok = (q.get("access_token") or [None])[0]
+                if tok:
+                    self._captured_chat_token = tok
+                self._captured_chat_hub = {
+                    "path": parsed.path,
+                    "query": {k: v[-1] for k, v in q.items() if v},
+                }
+                self._stream_conversation_id = self._captured_chat_hub["query"].get("ConversationId")
+                # 监听发送帧以抓取一次真实聊天模板；监听接收帧以判断 warm-up 是否真的通过。
+                ws.on("framesent", self._on_chat_frame_sent)
                 ws.on("framereceived", self._on_chat_frame)
             except Exception:
                 pass
@@ -462,18 +503,73 @@ class BrowserCopilot:
             pass
 
     def _on_chat_frame(self, payload) -> None:
-        """Flag a passed turn when the chat socket streams reply content.
-
-        An ``appendText`` (or ``imageGenerated``) frame means the warm-up reply is
-        flowing, i.e. Cloudflare let the turn through — auto_clear's success
-        signal. A ``challenge`` frame contains neither, so this never false-fires
-        on the gate itself."""
+        """收到机器人文本即视为 warm-up 已通过。"""
         try:
             data = payload if isinstance(payload, str) else bytes(payload).decode("utf-8", "ignore")
         except Exception:
             return
-        if "appendText" in data or "imageGenerated" in data:
-            self._warmup_replied = True
+        for frame in self._iter_signalr_frames(data):
+            if frame.get("type") == 3 and self._stream_request_id:
+                self._stream_done = True
+                continue
+            if frame.get("type") != 1 or frame.get("target") != "update":
+                continue
+            for arg in frame.get("arguments") or []:
+                req_id = arg.get("requestId")
+                if self._stream_request_id and req_id and req_id != self._stream_request_id:
+                    continue
+                if arg.get("writeAtCursor"):
+                    self._warmup_replied = True
+                    self._stream_started = True
+                    self._stream_chunks.append(arg["writeAtCursor"])
+                    return
+                for msg in arg.get("messages") or []:
+                    if msg.get("author") == "bot" and msg.get("text"):
+                        self._warmup_replied = True
+                        if self._stream_request_id and msg.get("requestId") not in (None, self._stream_request_id):
+                            continue
+                        msg_id = msg.get("messageId") or msg.get("requestId")
+                        if self._stream_started or msg_id in self._stream_seen_message_ids:
+                            continue
+                        self._stream_seen_message_ids.add(msg_id)
+                        self._stream_started = True
+                        self._stream_chunks.append(msg["text"])
+                        if arg.get("isLastUpdate"):
+                            self._stream_done = True
+                        return
+
+    def _on_chat_frame_sent(self, payload) -> None:
+        """抓取首个真实聊天调用，后续纯 HTTP 驱动直接复用这个模板。"""
+        try:
+            data = payload if isinstance(payload, str) else bytes(payload).decode("utf-8", "ignore")
+        except Exception:
+            return
+        for frame in self._iter_signalr_frames(data):
+            if frame.get("type") != 4 or frame.get("target") != "chat":
+                continue
+            if not frame.get("arguments"):
+                continue
+            message = frame["arguments"][0].get("message", {})
+            text = message.get("text")
+            if not text:
+                continue
+            if self._captured_chat_request_template is None:
+                self._captured_chat_request_template = frame
+            if self._stream_pending_prompt and text == self._stream_pending_prompt and self._stream_request_id is None:
+                self._stream_request_id = message.get("requestId")
+            return
+
+    @staticmethod
+    def _iter_signalr_frames(payload: str):
+        """按 SignalR Record Separator 切出完整 JSON 帧。"""
+        for chunk in (payload or "").split(chr(30)):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            try:
+                yield json.loads(chunk)
+            except Exception:
+                continue
 
     def _send_warmup(self, text: str = "hi") -> bool:
         """Send one message through the page composer to mint the chat token.
@@ -495,6 +591,81 @@ class BrowserCopilot:
             except PlaywrightError:
                 continue
         return False
+
+    def _upload_image(self, image_path: str) -> bool:
+        """通过页面上的文件输入控件上传单张本地图片。"""
+        image_path = str(Path(image_path).expanduser().resolve())
+        candidates = [
+            "input[type='file']",
+            "input[accept*='image']",
+        ]
+        for sel in candidates:
+            try:
+                self._page.wait_for_selector(sel, state="attached", timeout=4000)
+                self._page.locator(sel).first.set_input_files(image_path)
+                self._page.wait_for_timeout(1200)
+                return True
+            except PlaywrightError:
+                continue
+        trigger_selectors = (
+            "button[aria-label*='Upload']",
+            "button[aria-label*='Attach']",
+            "button[title*='Upload']",
+            "button[title*='Attach']",
+            "[data-testid*='upload']",
+            "[data-testid*='attach']",
+        )
+        for sel in trigger_selectors:
+            try:
+                self._page.wait_for_selector(sel, state="visible", timeout=2000)
+                with self._page.expect_file_chooser(timeout=3000) as chooser_info:
+                    self._page.click(sel)
+                chooser_info.value.set_files(image_path)
+                self._page.wait_for_timeout(1200)
+                return True
+            except PlaywrightError:
+                continue
+        return False
+
+    @property
+    def current_conversation_id(self) -> Optional[str]:
+        return self._stream_conversation_id or ((self._captured_chat_hub or {}).get("query") or {}).get("ConversationId")
+
+    def _reset_stream_state(self, prompt: str) -> None:
+        self._stream_pending_prompt = prompt
+        self._stream_request_id = None
+        self._stream_chunks = []
+        self._stream_done = False
+        self._stream_started = False
+        self._stream_error = None
+        self._stream_seen_message_ids = set()
+
+    def stream_chat(self, prompt: str, timeout: int = 120, image: Optional[str] = None):
+        """通过真实浏览器页面发送一条消息，并流式产出文本回复。"""
+        self._ensure_started()
+        self._install_ws_listener()
+        self._reset_stream_state(prompt)
+        try:
+            self._page.goto("https://m365.cloud.microsoft/chat/", wait_until="domcontentloaded")
+            self._page.wait_for_timeout(2000)
+        except PlaywrightError:
+            pass
+        if image is not None and not self._upload_image(image):
+            raise RuntimeError("浏览器页面中未找到可用图片上传控件，无法发送图片。")
+        if not self._send_warmup(prompt):
+            raise RuntimeError("浏览器页面中未找到可用输入框，无法发送消息。")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            while self._stream_chunks:
+                yield self._stream_chunks.pop(0)
+            if self._stream_error:
+                raise RuntimeError(self._stream_error)
+            if self._stream_done:
+                return
+            if self._window_closed():
+                raise RuntimeError("浏览器窗口已关闭，无法继续读取回复。")
+            self._page.wait_for_timeout(200)
+        raise TimeoutError(f"浏览器聊天在 {timeout}s 内未完成。")
 
     def acquire_chat_token(
         self, timeout: int = 60, warmup: bool = True, signin_grace: int = 8
@@ -519,7 +690,11 @@ class BrowserCopilot:
         self._install_ws_listener()
 
         tok = self.access_token()
-        if tok or not warmup:
+        # 旧实现只要能从本地缓存读到 token 就直接返回，但新协议还需要
+        # ChatHub URL 和一次真实发送帧模板，所以缺少快照时仍要 warm-up 一次。
+        if tok and self._captured_chat_hub and self._captured_chat_request_template:
+            return tok
+        if not warmup:
             return tok
 
         deadline = time.time() + timeout
@@ -530,6 +705,13 @@ class BrowserCopilot:
             self._page.wait_for_timeout(500)
         if not self.signed_in():
             return None
+
+        # 新协议握手和可用 token 都来自 M365 Chat 页面，不再依赖旧 consumer 页面的缓存。
+        try:
+            self._page.goto("https://m365.cloud.microsoft/chat/", wait_until="domcontentloaded")
+            self._page.wait_for_timeout(2000)
+        except PlaywrightError:
+            pass
 
         if not self._send_warmup():
             return self.access_token()
@@ -757,14 +939,39 @@ class BrowserCopilot:
                         else "done — no clearance earned")
         return earned
 
-    def cookies(self) -> Dict[str, str]:
-        """Return the signed-in Microsoft cookies as a name->value dict."""
+    def cookie_records(self):
+        """返回纯 HTTP 驱动所需的关键 Cookie 明细，保留域名与路径。"""
         self._ensure_started()
         try:
             raw = self._context.cookies()
         except PlaywrightError:
-            return {}
-        return {c["name"]: c["value"] for c in raw if "microsoft.com" in c.get("domain", "")}
+            return []
+        allowed_domains = (
+            "microsoft.com",
+            "cloud.microsoft",
+            "office.com",
+        )
+        kept = []
+        for cookie in raw:
+            domain = (cookie.get("domain") or "").lower()
+            if any(key in domain for key in allowed_domains):
+                kept.append({
+                    "name": cookie.get("name"),
+                    "value": cookie.get("value"),
+                    "domain": cookie.get("domain"),
+                    "path": cookie.get("path") or "/",
+                    "secure": bool(cookie.get("secure", False)),
+                    "expires": cookie.get("expires", -1),
+                })
+        return kept
+
+    def cookies(self) -> Dict[str, str]:
+        """返回兼容旧调用方的 Cookie 字典。"""
+        result = {}
+        for cookie in self.cookie_records():
+            if cookie.get("name") and cookie.get("name") not in result:
+                result[cookie["name"]] = cookie.get("value", "")
+        return result
 
     def export_auth(self, path: str = DEFAULT_AUTH_FILE, stamp: Optional[float] = None) -> dict:
         """Snapshot the signed-in cookies + access token to ``path`` as JSON.
@@ -772,12 +979,17 @@ class BrowserCopilot:
         ``stamp`` is the epoch seconds to record as ``saved_at`` (pass
         ``time.time()`` from the caller). Returns the auth dict.
         """
+        token = ((self._captured_chat_hub or {}).get("query") or {}).get("access_token") or self.access_token()
         auth = {
             "cookies": self.cookies(),
-            "access_token": self.access_token(),
+            "cookie_records": self.cookie_records(),
+            "access_token": token,
             # Federated logins (Google) ride an extra &X-UserIdentityType= on the
             # chat socket; the drivers replay it. None for Microsoft accounts.
             "identity_type": self._captured_identity_type,
+            # 新协议需要浏览器真实打开过一次 ChatHub，才能拿到稳定的路径和发送模板。
+            "chat_hub": self._captured_chat_hub,
+            "chat_request_template": self._captured_chat_request_template,
             "saved_at": stamp if stamp is not None else 0,
         }
         dest = Path(path)
