@@ -2,115 +2,118 @@
 
 ![Windows Copilot API — a free, OpenAI-compatible API for your Microsoft Copilot account](assets/windows-copilot-api-banner.png)
 
-Windows Copilot API 是一个本地运行的 Microsoft/M365 Copilot 代理服务。它复用你电脑上已经登录的 Copilot 会话，把 Copilot 封装成 OpenAI 兼容接口，方便 Python 程序、AI IDE、OpenAI SDK 或其他 OpenAI-compatible 客户端调用。
+Windows Copilot API is a local Microsoft/M365 Copilot bridge. It reuses the Copilot session already signed in on your computer and exposes it as an OpenAI-compatible API for Python scripts, AI IDEs, the OpenAI SDK, and other OpenAI-compatible clients.
 
-项目不是微软官方产品，也不属于 Microsoft、GitHub Copilot 或 OpenAI。它自动化的是网页端 Copilot/M365 Chat 体验，请只在个人或授权环境中使用，并遵守相关服务条款。
+This is not an official Microsoft, GitHub Copilot, or OpenAI project. It automates the web-based Copilot/M365 Chat experience, so use it only in personal or authorized environments and follow the relevant service terms.
 
-## 目录
+[中文文档](readme-zh.md)
 
-- [项目能做什么](#项目能做什么)
-- [运行机制](#运行机制)
-- [环境要求](#环境要求)
-- [安装与登录](#安装与登录)
-- [启动本地 API 服务](#启动本地-api-服务)
-- [OpenAI 兼容接口](#openai-兼容接口)
-- [Python 库调用](#python-库调用)
-- [流式输出](#流式输出)
-- [多轮会话](#多轮会话)
-- [图片输入](#图片输入)
-- [OpenAI tool_calls 兼容层](#openai-tool_calls-兼容层)
-- [AI IDE 接入](#ai-ide-接入)
-- [命令行用法](#命令行用法)
-- [认证与 token 快照](#认证与-token-快照)
-- [并发与限流](#并发与限流)
-- [Docker 运行](#docker-运行)
-- [测试与验证](#测试与验证)
-- [项目结构](#项目结构)
-- [常见问题](#常见问题)
-- [限制说明](#限制说明)
-- [许可证](#许可证)
+## Contents
 
-## 项目能做什么
+- [What this project does](#what-this-project-does)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Installation and sign-in](#installation-and-sign-in)
+- [Start the local API server](#start-the-local-api-server)
+- [OpenAI-compatible API](#openai-compatible-api)
+- [Python library usage](#python-library-usage)
+- [Streaming output](#streaming-output)
+- [Multi-turn conversations](#multi-turn-conversations)
+- [Image input](#image-input)
+- [OpenAI tool_calls compatibility](#openai-tool_calls-compatibility)
+- [AI IDE integration](#ai-ide-integration)
+- [Command line usage](#command-line-usage)
+- [Auth and token snapshots](#auth-and-token-snapshots)
+- [Concurrency and rate limiting](#concurrency-and-rate-limiting)
+- [Docker usage](#docker-usage)
+- [Tests and validation](#tests-and-validation)
+- [Project layout](#project-layout)
+- [Troubleshooting](#troubleshooting)
+- [Known limitations](#known-limitations)
+- [Note to the original author](#note-to-the-original-author)
+- [License](#license)
 
-- 把本机 Copilot 会话封装成 `http://127.0.0.1:8000/v1`。
-- 提供 OpenAI 兼容的 `/v1/models` 和 `/v1/chat/completions`。
-- 支持普通文本聊天、流式输出、多轮会话和图片输入。
-- 支持 OpenAI SDK、curl、AI IDE 等 OpenAI-compatible 客户端。
-- 支持 `tools`、`tool_choice` 和 `message.tool_calls` 的最小兼容实现。
-- 支持 `stream=true + tools`，可返回 SSE 格式的 `delta.tool_calls`。
-- 支持本地 Python 库直接调用，不一定要启动 HTTP 服务。
+## What this project does
 
-## 运行机制
+- Exposes your local Copilot session as `http://127.0.0.1:8000/v1`.
+- Provides OpenAI-compatible `/v1/models` and `/v1/chat/completions` endpoints.
+- Supports text chat, streaming output, multi-turn conversations, and image input.
+- Works with the OpenAI SDK, curl, AI IDEs, and other OpenAI-compatible clients.
+- Provides a minimal compatibility layer for `tools`, `tool_choice`, and `message.tool_calls`.
+- Supports `stream=true + tools` by returning SSE `delta.tool_calls`.
+- Can also be used directly as a Python library without starting the HTTP server.
 
-项目使用你本机浏览器登录后的 Microsoft/M365 Copilot 会话，保存必要的登录快照到 `session/` 目录。服务启动后，客户端请求会进入本地 FastAPI 服务，再由项目内部的 Copilot 客户端转发到 M365 ChatHub。
+## How it works
 
-文本请求优先走纯 HTTP/ChatHub 链路。图片输入仍需要浏览器上传路径。登录、Cloudflare clearance、ChatHub token 和 Cookie 会被保存到 `session/token.json`，用于后续请求复用。
+The project uses the Microsoft/M365 Copilot session stored in your local browser profile. After sign-in, it saves a local snapshot under `session/`, including the token, cookies, and ChatHub request metadata required by the HTTP driver.
 
-## 环境要求
+Client requests go to the local FastAPI server. The server parses OpenAI-style messages, forwards the request to the internal Copilot client, and converts the result back into OpenAI-compatible response shapes. Text requests use the M365 ChatHub path. Image input still uses the browser upload path.
 
-- Python 3.9 或更高版本。
-- 能正常访问 Microsoft/M365 Copilot 的账号。
-- Windows、macOS、Linux 均可运行；本仓库当前主要在 Windows PowerShell 下验证。
-- 首次登录需要可见浏览器。
+## Requirements
 
-## 安装与登录
+- Python 3.9 or newer.
+- A Microsoft/M365 account that can access Copilot.
+- Windows, macOS, or Linux. This fork is mainly verified on Windows PowerShell.
+- A visible browser for the first sign-in.
 
-克隆项目后进入项目目录：
+## Installation and sign-in
+
+Clone the repository and enter the project directory:
 
 ```powershell
 git clone "<your-repo-url>"
 cd "Windows-Copilot-API"
 ```
 
-建议创建虚拟环境：
+Create a virtual environment:
 
 ```powershell
 python -m venv "venv"
 ".\venv\Scripts\Activate.ps1"
 ```
 
-如果 PowerShell 阻止激活脚本，可先允许当前用户执行本地脚本：
+If PowerShell blocks the activation script, allow local scripts for the current user:
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-安装依赖：
+Install dependencies:
 
 ```powershell
 python -m pip install -r "requirements.txt"
 python -m playwright install chromium
 ```
 
-首次登录：
+Sign in once:
 
 ```powershell
 python -m copilot login
 ```
 
-命令会打开浏览器。你需要完成 Microsoft/M365 Copilot 登录，以及可能出现的人机验证。登录完成后，程序会保存会话到 `session/`，后续启动服务时会自动复用。
+A browser window opens. Complete Microsoft/M365 Copilot sign-in and any human verification if it appears. When setup finishes, the project stores the local session under `session/` and reuses it for future requests.
 
-## 启动本地 API 服务
+## Start the local API server
 
-默认启动：
+Start the default server:
 
 ```powershell
 python "app.py"
 ```
 
-默认监听：
+Default address:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-OpenAI 兼容 base URL：
+OpenAI-compatible base URL:
 
 ```text
 http://127.0.0.1:8000/v1
 ```
 
-如果要改端口或监听地址：
+Change host or port:
 
 ```powershell
 $env:HOST="0.0.0.0"
@@ -118,93 +121,93 @@ $env:PORT="8080"
 python "app.py"
 ```
 
-也可以直接用 uvicorn：
+You can also start it with uvicorn:
 
 ```powershell
 python -m uvicorn server.api:app --host 0.0.0.0 --port 8080
 ```
 
-## OpenAI 兼容接口
+## OpenAI-compatible API
 
-当前提供两个主要接口：
+Available endpoints:
 
-| 方法 | 路径 | 说明 |
+| Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/v1/models` | 返回模型列表，目前只有 `copilot` |
-| `POST` | `/v1/chat/completions` | OpenAI 兼容聊天接口 |
+| `GET` | `/v1/models` | Lists the single `copilot` model |
+| `POST` | `/v1/chat/completions` | OpenAI-compatible chat endpoint |
 
-查看模型：
+List models:
 
 ```powershell
 curl.exe "http://127.0.0.1:8000/v1/models"
 ```
 
-普通聊天：
+Basic chat request:
 
 ```powershell
 curl.exe "http://127.0.0.1:8000/v1/chat/completions" `
   -H "Content-Type: application/json" `
   -H "Authorization: Bearer anything" `
-  -d "{"model":"copilot","messages":[{"role":"user","content":"你好，简单介绍一下你自己"}]}"
+  -d "{"model":"copilot","messages":[{"role":"user","content":"Hello, introduce yourself briefly."}]}"
 ```
 
-OpenAI Python SDK：
+OpenAI Python SDK:
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
-    api_key="anything",  # 本地服务会忽略该值，但 SDK 要求填写
+    api_key="anything",  # Required by the SDK, ignored by the local server.
 )
 
 resp = client.chat.completions.create(
     model="copilot",
     messages=[
-        {"role": "user", "content": "你好，简单介绍一下你自己"}
+        {"role": "user", "content": "Hello, introduce yourself briefly."}
     ],
 )
 
 print(resp.choices[0].message.content)
 ```
 
-## Python 库调用
+## Python library usage
 
-如果不想启动 HTTP 服务，可以直接调用 Python 库：
+You can call the Python library directly without starting the HTTP server:
 
 ```python
 from copilot import CopilotClient
 
 client = CopilotClient()
 
-reply = client.chat("用一句话介绍你自己")
+reply = client.chat("Introduce yourself in one sentence.")
 print(reply.text)
 ```
 
-继续同一个会话：
+Continue the same conversation:
 
 ```python
 reply2 = client.chat(
-    "继续刚才的话题",
+    "Continue the same topic.",
     conversation_id=reply.conversation_id,
 )
 print(reply2.text)
 ```
 
-直接流式调用：
+Direct streaming:
 
 ```python
 from copilot import CopilotClient
 
 client = CopilotClient()
 
-for chunk in client.stream("写一首五言绝句"):
+for chunk in client.stream("Write a short haiku."):
     print(chunk, end="", flush=True)
 ```
 
-## 流式输出
+## Streaming output
 
-HTTP 流式调用：
+HTTP streaming with the OpenAI SDK:
 
 ```python
 from openai import OpenAI
@@ -217,7 +220,7 @@ client = OpenAI(
 stream = client.chat.completions.create(
     model="copilot",
     messages=[
-        {"role": "user", "content": "写一首五言绝句"}
+        {"role": "user", "content": "Write a short haiku."}
     ],
     stream=True,
 )
@@ -228,20 +231,18 @@ for chunk in stream:
         print(delta, end="", flush=True)
 ```
 
-curl 流式调用：
+HTTP streaming with curl:
 
 ```powershell
 curl.exe "http://127.0.0.1:8000/v1/chat/completions" `
   -H "Content-Type: application/json" `
   -H "Authorization: Bearer anything" `
-  -d "{"model":"copilot","stream":true,"messages":[{"role":"user","content":"写一首五言绝句"}]}"
+  -d "{"model":"copilot","stream":true,"messages":[{"role":"user","content":"Write a short haiku."}]}"
 ```
 
-## 多轮会话
+## Multi-turn conversations
 
-每次新请求如果不传 `conversation_id`，会尽量开启新的 Copilot 会话。响应里会返回 `conversation_id`，客户端可以保存它并在下一轮传回。
-
-示例：
+If you do not pass `conversation_id`, the request starts a new Copilot conversation whenever possible. The response includes `conversation_id`; pass it back to continue the same upstream thread.
 
 ```python
 from openai import OpenAI
@@ -254,7 +255,7 @@ client = OpenAI(
 first = client.chat.completions.create(
     model="copilot",
     messages=[
-        {"role": "user", "content": "帮我起一个项目名"}
+        {"role": "user", "content": "Suggest a project name."}
     ],
 )
 
@@ -263,7 +264,7 @@ conversation_id = first.model_extra.get("conversation_id")
 second = client.chat.completions.create(
     model="copilot",
     messages=[
-        {"role": "user", "content": "继续，给我 5 个更短的名字"}
+        {"role": "user", "content": "Give me five shorter alternatives."}
     ],
     extra_body={
         "conversation_id": conversation_id
@@ -273,9 +274,9 @@ second = client.chat.completions.create(
 print(second.choices[0].message.content)
 ```
 
-## 图片输入
+## Image input
 
-接口支持 OpenAI 风格的 `content` parts，可以传入本地图片路径：
+The server accepts OpenAI-style content parts and can pass one local image file to Copilot:
 
 ```python
 from openai import OpenAI
@@ -291,7 +292,7 @@ resp = client.chat.completions.create(
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "描述这张图片"},
+                {"type": "text", "text": "Describe this image."},
                 {
                     "type": "image_url",
                     "image_url": {
@@ -306,34 +307,35 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
-当前图片能力限制：
+Current image limitations:
 
-- 只支持本地图片文件。
-- 不支持远程图片 URL。
-- 不支持 `data:` URL。
-- 图片请求目前仍依赖浏览器上传路径。
-- 图片请求暂不支持用 `conversation_id` 续聊。
+- Local image files only.
+- No remote image URLs.
+- No `data:` URLs.
+- Image requests still use the browser upload path.
+- Image requests currently start a new conversation and do not continue with `conversation_id`.
 
-## OpenAI tool_calls 兼容层
+## OpenAI tool_calls compatibility
 
-项目新增了最小 OpenAI `tool_calls` 兼容层，用于让 AI IDE 识别工具调用意图。
+This fork adds a minimal OpenAI `tool_calls` compatibility layer so AI IDEs can recognize tool invocation intent.
 
-支持字段：
+Supported fields and response shapes:
 
 - `tools`
 - `tool_choice`
-- 非流式 `message.tool_calls`
-- 流式 `delta.tool_calls`
+- Non-streaming `message.tool_calls`
+- Streaming `delta.tool_calls`
 - `finish_reason=tool_calls`
 
-重要说明：
+Important behavior:
 
-- 服务端不会执行工具。
-- 工具由 AI IDE 或客户端执行。
-- Copilot 不原生返回 OpenAI 标准 `tool_calls`，本项目会把工具定义转成提示词，让 Copilot 输出工具调用 JSON，再转换成 OpenAI 标准格式。
-- 这是兼容层，不是 Microsoft Declarative Agent 或 Copilot 原生 Plugin/MCP 体系。
+- The server does not execute tools.
+- The client or AI IDE executes tools.
+- Copilot does not natively return OpenAI-standard `tool_calls` in this transport.
+- The server converts OpenAI tool definitions into a strict planning prompt, asks Copilot to produce tool-call JSON, and then converts that JSON into OpenAI-compatible response fields.
+- This is a compatibility layer, not Microsoft Declarative Agent, Copilot Plugin, or MCP-native execution.
 
-### 非流式 tool_calls 示例
+### Non-streaming tool_calls
 
 ```python
 from openai import OpenAI
@@ -346,20 +348,20 @@ client = OpenAI(
 resp = client.chat.completions.create(
     model="copilot",
     messages=[
-        {"role": "user", "content": "探查一下本地环境，调用工具，使用 powershell"}
+        {"role": "user", "content": "Inspect the local environment using PowerShell."}
     ],
     tools=[
         {
             "type": "function",
             "function": {
                 "name": "run_powershell",
-                "description": "在本机 PowerShell 中执行命令",
+                "description": "Run a command in local Windows PowerShell.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "command": {
                             "type": "string",
-                            "description": "PowerShell 命令"
+                            "description": "PowerShell command"
                         }
                     },
                     "required": ["command"]
@@ -373,7 +375,7 @@ msg = resp.choices[0].message
 print(msg.tool_calls)
 ```
 
-可能返回：
+Possible response:
 
 ```json
 [
@@ -388,7 +390,7 @@ print(msg.tool_calls)
 ]
 ```
 
-### 流式 tool_calls 示例
+### Streaming tool_calls
 
 ```python
 from openai import OpenAI
@@ -402,14 +404,14 @@ stream = client.chat.completions.create(
     model="copilot",
     stream=True,
     messages=[
-        {"role": "user", "content": "探查一下本地环境，调用工具，使用 powershell"}
+        {"role": "user", "content": "Inspect the local environment using PowerShell."}
     ],
     tools=[
         {
             "type": "function",
             "function": {
                 "name": "run_powershell",
-                "description": "在本机 PowerShell 中执行命令",
+                "description": "Run a command in local Windows PowerShell.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -428,7 +430,7 @@ for chunk in stream:
         print(delta.tool_calls)
 ```
 
-流式 SSE 会包含：
+The SSE stream contains:
 
 ```text
 delta.tool_calls
@@ -438,7 +440,7 @@ data: [DONE]
 
 ### tool_choice
 
-可以强制指定工具：
+Force a specific tool:
 
 ```json
 {
@@ -451,7 +453,7 @@ data: [DONE]
 }
 ```
 
-如果不想让本轮触发工具：
+Disable tools for the current request:
 
 ```json
 {
@@ -459,9 +461,9 @@ data: [DONE]
 }
 ```
 
-## AI IDE 接入
+## AI IDE integration
 
-在 AI IDE 中选择 OpenAI-compatible provider：
+Configure your AI IDE as an OpenAI-compatible provider:
 
 ```text
 Base URL: http://127.0.0.1:8000/v1
@@ -469,77 +471,77 @@ Model: copilot
 API Key: anything
 ```
 
-如果 IDE 本身在本机运行，请优先使用 `127.0.0.1`。如果 IDE 的 Agent/执行器在沙箱、WSL、Docker 或远端容器里，`127.0.0.1` 指向的是那个环境自身，不一定是你的 Windows 本机。
+If the IDE is running on the same Windows machine, use `127.0.0.1`. If the IDE agent or terminal runs inside WSL, Docker, a remote sandbox, or another isolated runtime, `127.0.0.1` refers to that environment rather than your Windows host.
 
-AI IDE 工具调用需要 IDE 自己具备工具执行能力。本项目只负责返回 OpenAI 标准 `tool_calls`，不会替 IDE 读文件、写文件或执行命令。
+Tool execution depends on the IDE. This project only returns OpenAI-standard tool-call intent. It does not read files, write files, run commands, or call the IDE tool layer by itself.
 
-建议在 IDE 中确认：
+Recommended IDE checks:
 
-- 当前模型使用的是 `copilot`。
-- Provider base URL 是 `http://127.0.0.1:8000/v1`。
-- Agent Mode 已启用。
-- Workspace/File Access 已允许访问项目目录。
-- Terminal/PowerShell 工具权限已开启。
-- 如果刚更新服务，重新开启新 Chat 或 reload IDE 窗口，避免旧连接缓存。
+- The selected model is `copilot`.
+- The provider base URL is `http://127.0.0.1:8000/v1`.
+- Agent Mode is enabled.
+- Workspace or file access is enabled.
+- Terminal or PowerShell tools are enabled.
+- After updating the server, start a new chat or reload the IDE window to avoid stale provider state.
 
-## 命令行用法
+## Command line usage
 
-登录：
+Sign in:
 
 ```powershell
 python -m copilot login
 ```
 
-快速提问：
+Ask a quick question:
 
 ```powershell
-python -m copilot ask "你好"
+python -m copilot ask "Hello"
 ```
 
-启动服务：
+Start the API server:
 
 ```powershell
 python "app.py"
 ```
 
-## 认证与 token 快照
+## Auth and token snapshots
 
-登录后，项目会在 `session/` 下保存本机会话：
+The sign-in flow stores local session data under `session/`:
 
-| 文件或目录 | 说明 |
+| Path | Purpose |
 | --- | --- |
-| `session/profile/` | 浏览器 profile |
-| `session/token.json` | token、Cookie、ChatHub 快照 |
-| `session/login.log` | 登录过程日志 |
-| `session/ws_capture.log` | WebSocket 捕获日志 |
-| `session/diagnostic_report.txt` | 诊断报告 |
+| `session/profile/` | Browser profile |
+| `session/token.json` | Token, cookies, and ChatHub snapshot |
+| `session/login.log` | Sign-in log |
+| `session/ws_capture.log` | WebSocket capture log |
+| `session/diagnostic_report.txt` | Redacted diagnostic report |
 
-如果出现 ChatHub `401`、token 过期、Cookie 失效，重新登录：
+If you see ChatHub `401`, expired token errors, or stale cookies, refresh the session:
 
 ```powershell
 python -m copilot login
 ```
 
-如果登录或首个请求失败，运行诊断：
+If sign-in or the first request fails, run diagnostics:
 
 ```powershell
 python "tests/diagnostic.py"
 ```
 
-诊断会刷新会话并写入报告。报告会脱敏 token、Cookie、邮箱等敏感信息。
+Diagnostic output redacts sensitive values such as access tokens, cookies, OAuth codes, and emails.
 
-## 并发与限流
+## Concurrency and rate limiting
 
-项目桥接的是单个 Copilot 账号。上游 ChatHub 不适合并发多会话，所以服务端用锁串行化请求。并发 HTTP 请求会排队，不会真正并行发送到上游。
+The bridge uses one Copilot account. The upstream ChatHub path does not tolerate multiple active conversations from the same process, so upstream calls are serialized with a lock. Concurrent HTTP requests queue and run one at a time.
 
-默认限流参数：
+Default rate limit settings:
 
-| 环境变量 | 默认值 | 说明 |
+| Environment variable | Default | Meaning |
 | --- | --- | --- |
-| `RATE_LIMIT_RPM` | `12` | 每分钟最多接受请求数，`0` 表示关闭 |
-| `RATE_LIMIT_BURST` | `4` | 允许短时间突发请求数 |
+| `RATE_LIMIT_RPM` | `12` | Accepted requests per minute. `0` disables the limit |
+| `RATE_LIMIT_BURST` | `4` | Allowed short burst size |
 
-修改限流：
+Change rate limits:
 
 ```powershell
 $env:RATE_LIMIT_RPM="20"
@@ -547,32 +549,32 @@ $env:RATE_LIMIT_BURST="5"
 python "app.py"
 ```
 
-压力测试：
+Stress test:
 
 ```powershell
 python "tests/stress.py"
 python "tests/stress.py" --max 64 --timeout 120 --url "http://127.0.0.1:8000"
 ```
 
-## Docker 运行
+## Docker usage
 
-如果使用 Docker，建议先在宿主机完成登录：
+Sign in on the host first:
 
 ```powershell
 python -m copilot login
 ```
 
-然后启动容器：
+Then start Docker:
 
 ```powershell
 docker compose up --build
 ```
 
-Docker 会复用挂载的 `session/`。但容器内通常不能完成可见浏览器验证，clearance 过期后可能需要回到宿主机重新运行登录。
+Docker reuses the mounted `session/` directory. A container usually cannot complete visible browser verification, so if clearance expires, re-run login on the host.
 
-## 测试与验证
+## Tests and validation
 
-当前核心测试：
+Core tests:
 
 ```powershell
 python -m unittest tests.test_tool_calls
@@ -580,77 +582,78 @@ python -m unittest tests.test_multimodal_api
 python -m unittest tests.test_server
 ```
 
-如果 `TestClient` 相关测试缺少依赖，可安装：
+If `TestClient` tests need the compatibility dependency:
 
 ```powershell
 python -m pip install httpx2
 ```
 
-本地服务健康检查：
+Health check:
 
 ```powershell
 curl.exe "http://127.0.0.1:8000/v1/models"
 ```
 
-普通聊天验证：
+Basic chat check:
 
 ```powershell
 curl.exe "http://127.0.0.1:8000/v1/chat/completions" `
   -H "Content-Type: application/json" `
   -H "Authorization: Bearer anything" `
-  -d "{"model":"copilot","messages":[{"role":"user","content":"只回复 OK"}]}"
+  -d "{"model":"copilot","messages":[{"role":"user","content":"Reply with OK only"}]}"
 ```
 
-## 项目结构
+## Project layout
 
-| 路径 | 说明 |
+| Path | Purpose |
 | --- | --- |
-| `app.py` | 服务启动入口 |
-| `copilot/` | Copilot 登录、鉴权、浏览器和 HTTP/ChatHub 驱动 |
-| `server/` | FastAPI OpenAI 兼容服务 |
-| `server/schemas.py` | 请求模型，包含 `tools/tool_choice` |
-| `server/prompt.py` | 消息解析、图片解析、工具提示和工具 JSON 解析 |
-| `server/openai_format.py` | OpenAI 格式响应构造 |
-| `server/api.py` | HTTP 路由、流式输出、tool_calls 分支 |
-| `examples/` | 示例脚本 |
-| `tests/` | 单元测试、诊断和压力测试 |
-| `session/` | 本地登录态，已 git-ignore |
-| `Docs/` | 项目文档 |
+| `app.py` | Server entry point |
+| `copilot/` | Copilot sign-in, auth, browser, and HTTP/ChatHub driver |
+| `server/` | FastAPI OpenAI-compatible server |
+| `server/schemas.py` | Request models, including `tools` and `tool_choice` |
+| `server/prompt.py` | Message parsing, image parsing, tool prompt construction, and tool JSON parsing |
+| `server/openai_format.py` | OpenAI-compatible response builders |
+| `server/api.py` | HTTP routes, streaming output, and tool-call branches |
+| `examples/` | Example scripts |
+| `tests/` | Unit tests, diagnostics, and stress tests |
+| `session/` | Local session state, ignored by git |
+| `Docs/` | Project documentation |
+| `readme-zh.md` | Chinese README |
 
-## 常见问题
+## Troubleshooting
 
-### `/v1/models` 能访问，但聊天失败
+### `/v1/models` works, but chat fails
 
-先确认 `session/token.json` 是否过期。最简单的处理方式是重新登录：
+Refresh the local session:
 
 ```powershell
 python -m copilot login
 ```
 
-### 出现 ChatHub 401
+### ChatHub 401
 
-通常是 token、Cookie 或 ChatHub 快照过期。重新登录后重启服务：
+The token, cookies, or ChatHub snapshot are stale. Re-login and restart the server:
 
 ```powershell
 python -m copilot login
 python "app.py"
 ```
 
-### 出现 Cloudflare clearance 问题
+### Cloudflare clearance
 
-运行：
+Run:
 
 ```powershell
 python -m copilot login
 ```
 
-如果浏览器出现验证，请手动完成。
+If the browser shows a verification challenge, complete it manually.
 
-### AI IDE 说访问不到本地路径
+### AI IDE cannot access local files
 
-这通常不是模型 API 问题，而是 IDE 的 Agent/执行环境没有访问你的 Windows 文件系统。请确认 IDE 的 Terminal/Agent 不是运行在 WSL、Docker、远端 sandbox 或临时目录里。
+This is usually an IDE agent/runtime issue rather than a model API issue. The IDE terminal or agent may be running in WSL, Docker, a remote sandbox, or a temporary workspace.
 
-可以在 IDE 终端测试：
+Check from the IDE terminal:
 
 ```powershell
 pwd
@@ -658,24 +661,28 @@ Test-Path "c:\Users\patde\Documents\GitHub\Windows-Copilot-API"
 dir "c:\Users\patde\Documents\GitHub\Windows-Copilot-API"
 ```
 
-### AI IDE 不触发工具
+### AI IDE does not trigger tools
 
-确认 IDE 支持 OpenAI `tool_calls`，并且 Agent Mode、Workspace Access、Terminal Access 已开启。本项目只返回工具调用意图，不执行工具。
+Make sure the IDE supports OpenAI `tool_calls`, and that Agent Mode, Workspace Access, and Terminal Access are enabled. This project returns tool-call intent but does not execute tools itself.
 
-### `stream=true + tools` 报错
+### `stream=true + tools` fails
 
-当前版本已支持最小流式 `tool_calls`。如果仍然报旧错误，请重启服务并在 IDE 中新开 Chat 或 reload 窗口。
+The current fork supports minimal streaming `tool_calls`. If the IDE still shows an old error, restart the server and open a new IDE chat or reload the IDE window.
 
-## 限制说明
+## Known limitations
 
-- 当前只暴露一个模型：`copilot`。
-- 服务端不执行工具，只返回 `tool_calls`。
-- `tool_calls` 是兼容层，不是 Copilot 原生 OpenAI wire format。
-- 工具调用 JSON 依赖 Copilot 按提示输出，极端情况下可能退化为普通文本。
-- 图片输入仍走浏览器路径。
-- 单账号上游请求会串行化，不适合高并发网关。
-- `session/` 含登录态，不要提交到 git，也不要分享给他人。
+- The server advertises one model: `copilot`.
+- The server does not execute tools; it only returns `tool_calls`.
+- `tool_calls` is a compatibility layer, not a native Copilot/OpenAI wire format.
+- Tool-call JSON depends on Copilot following the strict planning prompt; unusual prompts may still produce normal text.
+- Image input still uses the browser path.
+- Upstream requests are serialized and are not suitable for a high-throughput gateway.
+- `session/` contains local auth state. Do not commit it or share it.
 
-## 许可证
+## Note to the original author
 
-项目使用 [MIT License](LICENSE)。本项目为非官方实现，使用者需要自行承担账号、数据和服务条款相关责任。
+Thank you to the original author for creating this project and making the Copilot web experience accessible through a practical local API bridge. This fork keeps the original idea intact while adding a Chinese README, expanded usage documentation, an OpenAI `tool_calls` compatibility layer, streaming `delta.tool_calls` support for AI IDEs, new tool-call tests, and clearer guidance for local IDE integration, token refresh, troubleshooting, and validation.
+
+## License
+
+Released under the [MIT License](LICENSE). This is an unofficial implementation, and users are responsible for their own account usage, data handling, and compliance with applicable service terms.

@@ -106,3 +106,11 @@
 
 - 用户: 确认执行 commit 并 push 到 `origin/master`。
 - 助手: 已提交并推送主变更，提交号 `b3492b3`，提交信息 `feat: add OpenAI tool calls compatibility`；远端 `origin/master` 已从 `b838c55` 更新到 `b3492b3`。
+## 2026-06-28 07:51 记录
+
+- 用户: 要求把中文 README 改为 `readme-zh.md`，重写英文 `README.md`，并写一段给原作者的英文感谢说明。
+- 助手: 已将当前中文 README 另存为 `readme-zh.md`；重新生成英文 `README.md`，包含功能、安装、调用、tool_calls、AI IDE、测试、限制等说明；在英文 README 中新增 `Note to the original author`，感谢原作者并说明 fork 后新增的中文文档、tool_calls、流式工具调用、测试和 IDE 集成说明。
+## 2026-06-28 07:53 记录
+
+- 用户: 要求将 README 拆分与英文重写改动 push 到仓库。
+- 助手: 准备提交 `README.md`、`readme-zh.md` 和 `chat_history.md`；已检查当前分支为 `master`，`git diff --check` 无错误，仅有 Windows 换行转换提示。
